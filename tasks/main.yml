@@ -1,0 +1,118 @@
+---
+- name: Install nginx 
+  dnf: 
+    name: nginx 
+    state: latest
+  notify:
+    - Started and Enabled nginx
+
+- name: Install MariaDB 
+  dnf: 
+    name: 
+      - mariadb-server 
+      - mariadb
+      - python3-PyMySQL
+    state: latest 
+  
+- name: Started and Enabled MariaDB
+  service: 
+    name: mariadb
+    enabled: true 
+    state: started
+
+- name: Configure root password MariaDB
+  mysql_user:
+    check_implicit_admin: true
+    login_user: root 
+    login_password: "{{ mariadb_root_password }}"
+    user: root 
+    password: "{{ mariadb_root_password }}"
+    host: localhost
+
+- name: Roundcube Webmail | Download the program archive
+  get_url:
+    url: '{{ url_download }}'
+    dest: '{{ path_download }}'
+  register: check_name_archive
+
+- name: Roundcube Webmail | Creating a directory for Roundcube
+  file:
+    path: /usr/share/nginx/html/webmail
+    recurse: yes 
+    state: directory
+
+- name: Roundcube Webmail | Unpacking the downloaded archive
+  command: 
+    cmd: tar -C /usr/share/nginx/html/webmail -xvf {{ check_name_archive.dest }} --strip-components 1
+    creates: /usr/share/nginx/html/webmail/config/config.inc.php.sample
+
+- name: Roundcube Webmail | Copying the config template 'config.inc.php'
+  copy:
+    src: /usr/share/nginx/html/webmail/config/config.inc.php.sample
+    dest: /usr/share/nginx/html/webmail/config/config.inc.php
+    remote_src: yes 
+
+- name: Roundcube Webmail | Settings 'config.inc.php'
+  template:
+    src: config.inc.php.j2
+    dest: /usr/share/nginx/html/webmail/config/config.inc.php
+
+- name: Roundcube Webmail | Setting the owner to the portal folder
+  file: 
+    path: /usr/share/nginx/html/webmail
+    recurse: yes
+    state: directory
+    owner: apache
+    group: apache
+
+- name: Roundcube Webmail | Creating a database for roundcubemail in MariaDB
+  community.mysql.mysql_db:
+    name: "{{ mariadb_database_roundcube }}"
+    encoding: utf8
+    collation: utf8_bin
+    login_user: root
+    login_password: "{{ mariadb_root_password }}"
+  failed_when: false 
+
+- name: Roundcube Webmail | Creating a user for roundcubemail in MariaDB
+  community.mysql.mysql_user:
+    name: "{{ mariadb_username_roundcube }}"
+    password: "{{ mariadb_username_password_roundcube }}"
+    priv: '*.*:ALL,GRANT'
+    host: '%'
+    state: present
+    login_user: root
+    login_password: "{{ mariadb_root_password }}"
+
+- name: Roundcube Webmail | Upload to the created database
+  community.mysql.mysql_db:
+    name: "{{ mariadb_database_roundcube }}"
+    encoding: utf8
+    collation: utf8_bin
+    target: /usr/share/nginx/html/webmail/SQL/mysql.initial.sql
+    state: import
+    login_user: root
+    login_password: "{{ mariadb_root_password }}"
+  failed_when: false
+
+- name: Roundcube Webmail | Installing the components necessary for Roundcube operation
+  dnf: 
+    name: 
+      - php-pear 
+      - php-mcrypt 
+      - php-intl 
+      - php-ldap 
+      - php-pear-Net-SMTP
+    state: latest  
+
+- name: Roundcube Webmail | Setting php
+  lineinfile:
+    dest: '/etc/php.ini'
+    regexp: '{{ item.regexp }}'
+    line: '{{ item.line }}'
+  loop:
+    - { regexp: '^;date.timezone =', line: 'date.timezone = "Europe/Moscow"' }
+    - { regexp: '^post_max_size = 8M', line: 'post_max_size = 30M' }
+    - { regexp: '^upload_max_filesize = 2M', line: 'upload_max_filesize = 30M' }
+  notify:
+    - Restarted php-fpm
